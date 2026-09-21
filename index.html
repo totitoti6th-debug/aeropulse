@@ -1,0 +1,1399 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <link rel="manifest" href="manifest.json">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>AeroPulse Pro - 気圧・体調管理予報</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Google Fonts: Plus Jakarta Sans & JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['"Plus Jakarta Sans"', 'Inter', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'monospace'],
+          },
+          colors: {
+            slateDark: '#080c18',
+            panelBg: 'rgba(17, 24, 43, 0.72)',
+            panelBorder: 'rgba(255, 255, 255, 0.12)',
+            accentCyan: '#38bdf8',
+            alertDrop: '#f43f5e',
+            alertRebound: '#a855f7',
+            alertWarning: '#f59e0b',
+            alertSafe: '#10b981'
+          },
+          boxShadow: {
+            'glow-cyan': '0 0 20px -3px rgba(56, 189, 248, 0.45)',
+            'glow-rebound': '0 0 22px -2px rgba(168, 85, 247, 0.55)',
+            'glow-drop': '0 0 22px -2px rgba(244, 63, 94, 0.55)',
+          }
+        }
+      }
+    }
+  </script>
+
+  <style>
+    * {
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+      box-sizing: border-box;
+    }
+    body {
+      background: radial-gradient(circle at 50% -10%, #172554 0%, #080c18 55%, #03060f 100%);
+      color: #f8fafc;
+      min-height: 100vh;
+      overflow: hidden;
+      font-feature-settings: "palt" 1;
+    }
+
+    /* 左右慣性横スクロールコンテナ & ドラッグ有効化 */
+    .timeline-scroller {
+      overflow-x: scroll;
+      overflow-y: hidden;
+      -webkit-overflow-scrolling: touch;
+      overscroll-behavior-x: contain;
+      touch-action: pan-x;
+      scrollbar-width: none; /* Firefox */
+      cursor: grab;
+    }
+    .timeline-scroller:active {
+      cursor: grabbing;
+    }
+    .timeline-scroller::-webkit-scrollbar {
+      display: none; /* Chrome, Safari */
+    }
+
+    /* グラスモーフィズム効果 */
+    .glass-box {
+      background: rgba(16, 24, 44, 0.75);
+      backdrop-filter: blur(24px);
+      -webkit-backdrop-filter: blur(24px);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+    }
+    .glass-input {
+      background: rgba(255, 255, 255, 0.07);
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+    }
+
+    /* ボトムシートトランジション */
+    .sheet-transition {
+      transition: transform 0.32s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.32s ease;
+    }
+  </style>
+</head>
+<body class="flex flex-col h-screen w-full select-none justify-between p-3 max-w-md mx-auto relative overflow-hidden">
+
+  <!-- トップバー: 地域選択 / 次の危険ピークショートカット / 設定ボタン -->
+  <header class="flex items-center justify-between z-20 pb-0.5 gap-2">
+    <!-- 地域選択ドロップダウン起動ボタン -->
+    <button id="btnHeaderLocation" class="flex items-center gap-1.5 px-3 py-1.5 rounded-2xl glass-box active:scale-95 transition shrink-0">
+      <div class="w-5 h-5 rounded-full bg-sky-500/20 text-sky-400 flex items-center justify-center text-xs">
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+      </div>
+      <span id="headerPrefName" class="text-xs font-bold text-slate-100 tracking-wide">東京都 (東京)</span>
+      <svg class="w-3 h-3 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+    </button>
+
+    <!-- 【改善項目】次の危険ピークへ直行するスマートバッジ -->
+    <button id="btnJumpNextHazard" class="flex-1 flex items-center justify-center gap-1 px-2.5 py-1.5 rounded-2xl bg-purple-950/50 border border-purple-500/40 text-purple-200 text-[11px] font-extrabold truncate active:scale-95 transition shadow-glow-rebound">
+      <span class="w-2 h-2 rounded-full bg-purple-400 animate-pulse shrink-0"></span>
+      <span id="nextHazardLabel" class="truncate">次の警戒を検出中...</span>
+    </button>
+
+    <!-- 設定・条件変更スライドシート起動ボタン -->
+    <button id="btnOpenSettings" class="w-8 h-8 rounded-2xl glass-box text-slate-300 flex items-center justify-center hover:text-white active:scale-95 transition shrink-0" title="設定">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+    </button>
+  </header>
+
+  <!-- 基準点フォーカス・リアルタイムダッシュボード -->
+  <section id="reticleFocusCard" class="glass-box rounded-3xl p-3.5 shadow-2xl relative overflow-hidden transition-all duration-300">
+    <!-- 装飾アンビエント発光 -->
+    <div id="cardGlowBackdrop" class="absolute -right-10 -top-10 w-44 h-44 rounded-full bg-sky-500/25 blur-3xl pointer-events-none transition-all duration-500"></div>
+
+    <!-- 照準基準点の日時とステータスタグ -->
+    <div class="flex items-center justify-between relative z-10 border-b border-white/10 pb-2 mb-2.5">
+      <div class="flex items-center gap-1.5">
+        <span class="text-[9px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded bg-sky-500/20 text-sky-300 font-mono">基準点</span>
+        <span id="reticleTargetTime" class="text-xs font-extrabold text-white tracking-tight font-sans">9月21日(月) 21:00</span>
+        <span id="reticleIsNowBadge" class="text-[9px] font-bold px-1.5 py-0.5 rounded bg-sky-400 text-slate-950">NOW</span>
+      </div>
+      <div id="reticleRiskBadge" class="flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold transition-all">
+        <span class="w-1.5 h-1.5 rounded-full bg-current animate-pulse"></span>
+        <span id="reticleRiskLabel">判定中</span>
+      </div>
+    </div>
+
+    <!-- 数値表示部: 海面気圧 & 気温・天候 -->
+    <div class="grid grid-cols-12 gap-2 items-center relative z-10">
+      
+      <!-- 気圧巨大表示 (col-7) -->
+      <div class="col-span-7 flex flex-col">
+        <div class="flex items-baseline gap-1.5">
+          <span id="reticlePressure" class="text-3xl font-extrabold font-mono tracking-tight text-white leading-none">1013.2</span>
+          <span class="text-xs font-bold text-sky-400">hPa</span>
+        </div>
+        <!-- 3時間前からの落差・変動スピード -->
+        <div class="flex items-center gap-1.5 mt-1.5 text-xs font-semibold">
+          <span class="text-slate-400 text-[10px]">前3h変動:</span>
+          <span id="reticlePressureTrend" class="font-mono text-emerald-400 text-[11px]">±0.0 hPa</span>
+        </div>
+      </div>
+
+      <!-- 気温＆天気アイコン (col-5) -->
+      <div class="col-span-5 flex flex-col items-end border-l border-white/10 pl-2.5">
+        <div class="flex items-center gap-1.5">
+          <span id="reticleWeatherIcon" class="text-2xl">⛅</span>
+          <div class="flex items-baseline">
+            <span id="reticleTemp" class="text-2xl font-extrabold text-white leading-none">23</span>
+            <span class="text-xs font-semibold text-slate-300 ml-0.5">℃</span>
+          </div>
+        </div>
+        <span id="reticleWeatherText" class="text-[11px] font-medium text-slate-300 mt-0.5">晴れ時々曇</span>
+      </div>
+
+    </div>
+
+    <!-- 【改善項目】体調スタンプ・服薬ログ記録ツールバー -->
+    <div class="mt-2.5 pt-2 border-t border-white/10 flex items-center justify-between gap-1.5 relative z-10">
+      <span class="text-[10px] text-slate-400 font-semibold shrink-0">この時間に記録:</span>
+      <div class="flex items-center gap-1.5 flex-1 justify-end">
+        <button id="btnStampHeadache" class="px-2 py-1 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 text-[10px] font-bold text-rose-300 active:scale-95 transition flex items-center gap-1">
+          <span>⚡</span><span>頭痛</span>
+        </button>
+        <button id="btnStampMeds" class="px-2 py-1 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-[10px] font-bold text-amber-300 active:scale-95 transition flex items-center gap-1">
+          <span>💊</span><span>服薬</span>
+        </button>
+        <button id="btnStampFine" class="px-2 py-1 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/40 text-[10px] font-bold text-emerald-300 active:scale-95 transition flex items-center gap-1">
+          <span>🌿</span><span>快調</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- 医学的アドバイス短文 -->
+    <div class="mt-2 pt-1.5 border-t border-white/10 flex items-start gap-1.5 text-[11px] leading-relaxed text-slate-300 relative z-10">
+      <div id="reticleAdviceIcon" class="text-sky-400 shrink-0 text-xs">💡</div>
+      <p id="reticleRiskAdvice" class="line-clamp-2">気圧は比較的安定しています。自律神経への急激な刺激リスクは低い時間帯です。</p>
+    </div>
+  </section>
+
+  <!-- タイムライン全体（操作ボタン ＋ 固定Y軸 ＋ スクロール可能グラフ ＋ 中央固定基準点） -->
+  <section class="glass-box rounded-3xl p-3 shadow-2xl flex flex-col flex-1 my-2 min-h-0 relative overflow-hidden">
+    
+    <!-- タイムライン操作バー: ◀ 6h / 今 / 6h ▶ & スケール説明 -->
+    <div class="flex items-center justify-between px-1 mb-2 shrink-0">
+      <!-- 左右クイック移動ボタン -->
+      <div class="flex items-center gap-1.5">
+        <button id="btnStepPrev" class="px-2 py-1 rounded-xl bg-white/10 hover:bg-white/15 text-slate-200 text-[10px] font-bold border border-white/10 active:scale-95 transition flex items-center gap-0.5">
+          <span>◀</span><span>6h前</span>
+        </button>
+        <button id="btnSnapToNow" class="px-2.5 py-1 rounded-xl bg-sky-500/25 hover:bg-sky-500/35 text-sky-300 text-[10px] font-bold border border-sky-400/40 shadow-glow-cyan active:scale-95 transition">
+          今に戻る
+        </button>
+        <button id="btnStepNext" class="px-2 py-1 rounded-xl bg-white/10 hover:bg-white/15 text-slate-200 text-[10px] font-bold border border-white/10 active:scale-95 transition flex items-center gap-0.5">
+          <span>6h後</span><span>▶</span>
+        </button>
+      </div>
+
+      <!-- 凡例 -->
+      <div class="flex items-center gap-2 text-[10px]">
+        <span class="flex items-center gap-1 text-slate-300"><span class="w-2 h-2 rounded-full bg-purple-500 shadow-glow-rebound"></span>反転上昇</span>
+        <span class="flex items-center gap-1 text-slate-300"><span class="w-2 h-2 rounded-full bg-rose-500 shadow-glow-drop"></span>急低下</span>
+      </div>
+    </div>
+
+    <!-- グラフ配置コンテナ（左固定Y軸 + 右側横スクロール＆ドラッグ対応コンテナ） -->
+    <div class="relative flex-1 w-full rounded-2xl bg-slate-950/70 border border-white/10 overflow-hidden flex min-h-0">
+      
+      <!-- 1. 左側：固定Y軸カラム (hPa目盛り) -->
+      <div id="fixedYAxisCol" class="w-10 shrink-0 h-full border-r border-white/10 flex flex-col justify-between py-5 px-1 z-20 bg-slate-950/95 text-right font-mono text-[9px] text-slate-400 select-none">
+        <!-- JSで動的に目盛り数値を描画 -->
+      </div>
+
+      <!-- 2. 右側：横スクロール＆ドラッグ操作タイムライン本体 -->
+      <div id="timelineScroller" class="timeline-scroller flex-1 h-full relative">
+        
+        <!-- タイムライン内部コンテンツ（120h × 18px = 2160px + 左右パディング） -->
+        <div id="timelineTrack" class="relative h-full flex flex-col justify-between">
+          
+          <!-- 日付バー（最上部） -->
+          <div id="layerDatePills" class="h-5 w-full relative shrink-0 border-b border-white/5"></div>
+
+          <!-- 天気・気温行（3時間間隔で配置） -->
+          <div id="layerWeatherRow" class="h-9 w-full relative shrink-0"></div>
+
+          <!-- 気圧波形 Canvas レイヤー（中央・伸縮） -->
+          <div class="relative flex-1 w-full min-h-0">
+            <canvas id="canvasPressureWave" class="absolute inset-0 block w-full h-full"></canvas>
+          </div>
+
+          <!-- 時刻行（3時間おき：0, 3, 6, 9, 12, 15, 18, 21時） -->
+          <div id="layerTimeRow" class="h-8 w-full relative shrink-0 border-t border-white/10 bg-slate-900/50"></div>
+
+        </div>
+      </div>
+
+      <!-- 3. 【最重要】画面中央固定の基準点レティクル（照準ライン & ポインター） -->
+      <div class="pointer-events-none absolute top-0 bottom-0 z-30 flex flex-col items-center" style="left: calc(2.5rem + (100% - 2.5rem) / 2); transform: translateX(-50%);">
+        <!-- 上部照準アイコン -->
+        <div class="bg-sky-400 text-slate-950 text-[8px] font-extrabold px-1.5 py-0.5 rounded-full shadow-glow-cyan flex items-center gap-0.5 mt-1 border border-white">
+          <span>▼</span>
+          <span>基準点</span>
+        </div>
+        <!-- 垂直レーザーライン -->
+        <div class="w-0.5 flex-1 bg-gradient-to-b from-sky-400 via-sky-300/80 to-sky-400/40 shadow-glow-cyan"></div>
+        <!-- 下部照準ポイントドット -->
+        <div class="w-2 h-2 rounded-full bg-sky-400 mb-0.5 ring-2 ring-white shadow-glow-cyan"></div>
+      </div>
+
+    </div>
+
+    <!-- 案内Tips -->
+    <div class="flex items-center justify-between text-[10px] text-slate-400 px-1 pt-1.5 shrink-0">
+      <span class="text-sky-300/90 font-medium">画面内に約24〜30時間をワイド表示中</span>
+      <span class="font-mono text-slate-400">左右スワイプまたはドラッグで移動</span>
+    </div>
+
+  </section>
+
+  <!-- フッター：今後24時間サマリーストリップ -->
+  <footer class="glass-box rounded-2xl p-2.5 flex items-center justify-around text-center text-xs shrink-0">
+    <div>
+      <span class="text-[10px] text-slate-400 block">今後24h 最低気圧</span>
+      <span id="metricMinP" class="font-mono font-extrabold text-white text-sm">-- hPa</span>
+    </div>
+    <div class="w-px h-6 bg-white/10"></div>
+    <div>
+      <span class="text-[10px] text-slate-400 block">最大反転上昇</span>
+      <span id="metricMaxRise" class="font-mono font-extrabold text-purple-400 text-sm">-- hPa</span>
+    </div>
+    <div class="w-px h-6 bg-white/10"></div>
+    <div>
+      <span class="text-[10px] text-slate-400 block">急低下最大落差</span>
+      <span id="metricMaxDrop" class="font-mono font-extrabold text-rose-400 text-sm">-- hPa</span>
+    </div>
+  </footer>
+
+  <!-- 設定・医学的アラート選択スライドアップ・ボトムシート -->
+  <div id="settingsBackdrop" class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 opacity-0 pointer-events-none transition-opacity duration-300"></div>
+
+  <div id="settingsSheet" class="fixed inset-x-0 bottom-0 max-w-md mx-auto z-50 glass-box rounded-t-3xl p-5 border-t border-white/20 shadow-2xl transform translate-y-full sheet-transition max-h-[85vh] overflow-y-auto flex flex-col gap-4 text-slate-200">
+    
+    <!-- シートドラッグバー ＆ ヘッダー -->
+    <div class="flex flex-col items-center">
+      <div class="w-12 h-1.5 rounded-full bg-white/20 mb-3"></div>
+      <div class="flex items-center justify-between w-full border-b border-white/10 pb-2">
+        <h3 class="text-base font-extrabold text-white flex items-center gap-2">
+          <span>⚙️</span>
+          <span>地域・医学アラート設定</span>
+        </h3>
+        <button id="btnCloseSettings" class="p-1 rounded-full text-slate-400 hover:text-white transition">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- 1. 地域（47都道府県）選択 -->
+    <div>
+      <label class="text-xs font-bold text-slate-300 block mb-1.5">予報地点（47都道府県）</label>
+      <div class="relative">
+        <select id="prefSelectDropdown" class="glass-input w-full text-sm font-semibold rounded-xl px-3 py-2.5 text-white appearance-none pr-8 focus:outline-none focus:ring-2 focus:ring-sky-400/60 cursor-pointer">
+          <!-- JSで47都道府県を動的生成 -->
+        </select>
+        <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3 text-slate-400">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+        </div>
+      </div>
+    </div>
+
+    <!-- 2. 医学的アラート条件の選択 -->
+    <div>
+      <div class="flex items-center justify-between mb-2">
+        <label class="text-xs font-bold text-slate-300">体調不良のトリガー条件（医学判定）</label>
+        <span class="text-[10px] text-sky-400 font-mono">複数から選択可能</span>
+      </div>
+
+      <div class="space-y-2" id="alertProfileList">
+        
+        <!-- プロファイル1: 【最重要】底打ち・反転上昇警戒 -->
+        <button data-rule="rebound" class="rule-card active w-full text-left p-3 rounded-2xl border transition-all flex items-start gap-3 bg-purple-950/40 border-purple-500/60 shadow-glow-rebound text-white">
+          <span class="text-xl mt-0.5">🔄</span>
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center justify-between">
+              <span class="font-extrabold text-sm text-purple-300">底打ち反転・急上昇警戒</span>
+              <span class="text-[10px] bg-purple-500/30 text-purple-200 px-1.5 py-0.5 rounded font-mono font-bold">推奨</span>
+            </div>
+            <p class="text-[11px] text-slate-300 mt-1 leading-snug">
+              気圧が下がりきった極小値から<strong>「1〜3時間で +1.2hPa 以上急上昇」</strong>した際に警告。副交感から交感神経への急激な反跳による血管収縮・頭痛を検知。
+            </p>
+          </div>
+        </button>
+
+        <!-- プロファイル2: 標準急低下 -->
+        <button data-rule="standard" class="rule-card w-full text-left p-3 rounded-2xl border border-white/10 bg-white/5 hover:bg-white/10 transition-all flex items-start gap-3 text-slate-300">
+          <span class="text-xl mt-0.5">📉</span>
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center justify-between">
+              <span class="font-bold text-sm text-rose-300">標準急低下警戒</span>
+              <span class="text-[10px] text-slate-400 font-mono">医学外来基準</span>
+            </div>
+            <p class="text-[11px] text-slate-400 mt-1 leading-snug">
+              <strong>「6時間で 6.0hPa 低下」</strong>で超警戒、3.5hPa低下で注意。中等度以上の気圧低下で内耳が刺激される標準境界です。
+            </p>
+          </div>
+        </button>
+
+        <!-- プロファイル3: 高感度・片頭痛 -->
+        <button data-rule="sensitive" class="rule-card w-full text-left p-3 rounded-2xl border border-white/10 bg-white/5 hover:bg-white/10 transition-all flex items-start gap-3 text-slate-300">
+          <span class="text-xl mt-0.5">⚡</span>
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center justify-between">
+              <span class="font-bold text-sm text-amber-300">早期警戒（片頭痛）</span>
+              <span class="text-[10px] text-slate-400 font-mono">服薬タイミング</span>
+            </div>
+            <p class="text-[11px] text-slate-400 mt-1 leading-snug">
+              <strong>「3時間で 3.0hPa 低下」</strong>で早期警告。わずかな低下の初動を捉え、予防薬やトリプタンの事前服薬を促します。
+            </p>
+          </div>
+        </button>
+
+        <!-- プロファイル4: 前線乱高下 -->
+        <button data-rule="turbulent" class="rule-card w-full text-left p-3 rounded-2xl border border-white/10 bg-white/5 hover:bg-white/10 transition-all flex items-start gap-3 text-slate-300">
+          <span class="text-xl mt-0.5">🌪️</span>
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center justify-between">
+              <span class="font-bold text-sm text-sky-300">前線急変・乱高下</span>
+              <span class="text-[10px] text-slate-400 font-mono">雷雨・前線通過</span>
+            </div>
+            <p class="text-[11px] text-slate-400 mt-1 leading-snug">
+              <strong>「1時間で ±1.5hPa 以上の激変」</strong>。寒冷前線や雷雲に伴う激しいアップダウンを捉えます。
+            </p>
+          </div>
+        </button>
+
+      </div>
+    </div>
+
+    <!-- 3. スタンプ記録のリセット操作 -->
+    <div class="flex items-center justify-between p-3 rounded-2xl bg-white/5 border border-white/10">
+      <div>
+        <span class="text-xs font-bold text-slate-200 block">体調スタンプ・服薬ログ</span>
+        <span class="text-[10px] text-slate-400">グラフ上のスタンプを全消去</span>
+      </div>
+      <button id="btnClearStamps" class="px-3 py-1.5 rounded-xl bg-rose-500/20 text-rose-300 border border-rose-500/40 text-xs font-bold active:scale-95 transition">
+        ログを初期化
+      </button>
+    </div>
+
+    <!-- 閉じるボタン -->
+    <button id="btnSaveAndCloseSettings" class="w-full py-3 rounded-2xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-extrabold text-sm transition active:scale-95 shadow-glow-cyan mt-1">
+      完了
+    </button>
+
+  </div>
+
+  <!-- トースト通知 -->
+  <div id="toastNotification" class="fixed top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-2xl glass-box text-white text-xs font-bold shadow-2xl flex items-center gap-2 pointer-events-none opacity-0 transition-opacity duration-300 border border-white/20">
+    <span id="toastIcon">✨</span>
+    <span id="toastMessage">完了しました</span>
+  </div>
+
+  <script>
+    /* 47都道府県の緯度経度データ */
+    const PREFECTURES_DATA = [
+      { id: "tokyo", name: "東京都 (東京)", lat: 35.6895, lon: 139.6917 },
+      { id: "kanagawa", name: "神奈川県 (横浜)", lat: 35.4437, lon: 139.6380 },
+      { id: "chiba", name: "千葉県 (千葉)", lat: 35.6074, lon: 140.1065 },
+      { id: "saitama", name: "埼玉県 (さいたま)", lat: 35.8617, lon: 139.6455 },
+      { id: "osaka", name: "大阪府 (大阪)", lat: 34.6937, lon: 135.5023 },
+      { id: "kyoto", name: "京都府 (京都)", lat: 35.0116, lon: 135.7681 },
+      { id: "hyogo", name: "兵庫県 (神戸)", lat: 34.6901, lon: 135.1955 },
+      { id: "aichi", name: "愛知県 (名古屋)", lat: 35.1815, lon: 136.9066 },
+      { id: "fukuoka", name: "福岡県 (福岡)", lat: 33.5904, lon: 130.4017 },
+      { id: "hokkaido", name: "北海道 (札幌)", lat: 43.0642, lon: 141.3469 },
+      { id: "miyagi", name: "宮城県 (仙台)", lat: 38.2682, lon: 140.8694 },
+      { id: "hiroshima", name: "広島県 (広島)", lat: 34.3853, lon: 132.4553 },
+      { id: "okinawa", name: "沖縄県 (那覇)", lat: 26.2124, lon: 127.6809 },
+      { id: "aomori", name: "青森県 (青森)", lat: 40.8244, lon: 140.7400 },
+      { id: "iwate", name: "岩手県 (盛岡)", lat: 39.7036, lon: 141.1527 },
+      { id: "akita", name: "秋田県 (秋田)", lat: 39.7186, lon: 140.1024 },
+      { id: "yamagata", name: "山形県 (山形)", lat: 38.2404, lon: 140.3636 },
+      { id: "fukushima", name: "福島県 (福島)", lat: 37.7500, lon: 140.4678 },
+      { id: "ibaraki", name: "茨城県 (水戸)", lat: 36.3418, lon: 140.4468 },
+      { id: "tochigi", name: "栃木県 (宇都宮)", lat: 36.5658, lon: 139.8836 },
+      { id: "gunma", name: "群馬県 (前橋)", lat: 36.3911, lon: 139.0608 },
+      { id: "niigata", name: "新潟県 (新潟)", lat: 37.9026, lon: 139.0232 },
+      { id: "toyama", name: "富山県 (富山)", lat: 36.6953, lon: 137.2113 },
+      { id: "ishikawa", name: "石川県 (金沢)", lat: 36.5947, lon: 136.6256 },
+      { id: "fukui", name: "福井県 (福井)", lat: 36.0652, lon: 136.2216 },
+      { id: "yamanashi", name: "山梨県 (甲府)", lat: 35.6639, lon: 138.5684 },
+      { id: "nagano", name: "長野県 (長野)", lat: 36.6513, lon: 138.1810 },
+      { id: "gifu", name: "岐阜県 (岐阜)", lat: 35.4233, lon: 136.7607 },
+      { id: "shizuoka", name: "静岡県 (静岡)", lat: 34.9769, lon: 138.3831 },
+      { id: "mie", name: "三重県 (津)", lat: 34.7303, lon: 136.5086 },
+      { id: "shiga", name: "滋賀県 (大津)", lat: 35.0045, lon: 135.8686 },
+      { id: "nara", name: "奈良県 (奈良)", lat: 34.6851, lon: 135.8328 },
+      { id: "wakayama", name: "和歌山県 (和歌山)", lat: 34.2260, lon: 135.1675 },
+      { id: "tottori", name: "鳥取県 (鳥取)", lat: 35.5039, lon: 134.2377 },
+      { id: "shimane", name: "島根県 (松江)", lat: 35.4723, lon: 133.0505 },
+      { id: "okayama", name: "岡山県 (岡山)", lat: 34.6618, lon: 133.9350 },
+      { id: "yamaguchi", name: "山口県 (山口)", lat: 34.1859, lon: 131.4706 },
+      { id: "tokushima", name: "徳島県 (徳島)", lat: 34.0657, lon: 134.5593 },
+      { id: "kagawa", name: "香川県 (高松)", lat: 34.3401, lon: 134.0434 },
+      { id: "ehime", name: "愛媛県 (松山)", lat: 33.8417, lon: 132.7661 },
+      { id: "kochi", name: "高知県 (高知)", lat: 33.5597, lon: 133.5311 },
+      { id: "saga", name: "佐賀県 (佐賀)", lat: 33.2494, lon: 130.2988 },
+      { id: "nagasaki", name: "長崎県 (長崎)", lat: 32.7448, lon: 129.8737 },
+      { id: "kumamoto", name: "熊本県 (熊本)", lat: 32.7898, lon: 130.7417 },
+      { id: "oita", name: "大分県 (大分)", lat: 33.2382, lon: 131.6126 },
+      { id: "miyazaki", name: "宮崎県 (宮崎)", lat: 31.9111, lon: 131.4239 },
+      { id: "kagoshima", name: "鹿児島県 (鹿児島)", lat: 31.5602, lon: 130.5581 }
+    ];
+
+    /* WMO 天気コード変換ヘルパー */
+    function getWeatherInfo(code) {
+      if (code === 0) return { text: "快晴", icon: "☀️" };
+      if (code === 1) return { text: "ほぼ快晴", icon: "🌤️" };
+      if (code === 2) return { text: "晴れ時々曇", icon: "⛅" };
+      if (code === 3) return { text: "曇り", icon: "☁️" };
+      if (code >= 45 && code <= 48) return { text: "霧", icon: "🌫️" };
+      if (code >= 51 && code <= 55) return { text: "霧雨", icon: "🌦️" };
+      if (code >= 61 && code <= 65) return { text: "雨", icon: "🌧️" };
+      if (code >= 71 && code <= 77) return { text: "雪", icon: "❄️" };
+      if (code >= 80 && code <= 82) return { text: "にわか雨", icon: "☔" };
+      if (code >= 95 && code <= 99) return { text: "雷雨", icon: "⛈️" };
+      return { text: "曇り", icon: "☁️" };
+    }
+
+    /* アプリ全体の状態オブジェクト */
+    const state = {
+      selectedPref: PREFECTURES_DATA[0],
+      activeRule: 'rebound',   // デフォルト: 底打ち反転・急上昇警戒
+      timelineData: [],        // 120時間分の気象データ
+      nowIndex: 48,            // 現在時刻のインデックス
+      focusedIndex: 48,        // 画面中央レティクル（基準点）が指しているインデックス
+      nextHazardIndex: null,   // 次に警戒すべきインデックス
+      slotWidth: 16,           // 1時間あたりの幅 (px)。画面幅360pxで約22〜24時間が収まる
+      yScaleMin: 1000,
+      yScaleMax: 1020,
+      sidePadding: 0,
+      stamps: {}               // { "2026-09-21T21:00": "headache" | "meds" | "fine" }
+    };
+
+    // localStorageからスタンプ履歴を復帰
+    try {
+      const savedStamps = localStorage.getItem('aeropulse_stamps');
+      if (savedStamps) state.stamps = JSON.parse(savedStamps);
+    } catch(e) {
+      console.warn('LocalStorage error:', e);
+    }
+
+    /**
+     * 医学的リスク判定エンジン
+     * 「底打ち反転上昇」「急低下」「高感度」「乱高下」を判定
+     */
+    function computeMedicalRisk(data, idx, rule) {
+      if (!data || data.length === 0 || idx < 0 || idx >= data.length) {
+        return { status: 'safe', label: '安定', badgeClass: 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30', advice: '通常推移です。' };
+      }
+
+      const currentP = data[idx].pressure;
+      const prev1 = data[Math.max(0, idx - 1)].pressure;
+      const prev3 = data[Math.max(0, idx - 3)].pressure;
+      const prev6 = data[Math.max(0, idx - 6)].pressure;
+
+      // 1. 底打ち反転・急上昇ルール (rebound)
+      if (rule === 'rebound') {
+        let minLocalP = currentP;
+        for (let k = Math.max(0, idx - 4); k <= idx; k++) {
+          if (data[k].pressure < minLocalP) minLocalP = data[k].pressure;
+        }
+        const reboundRise = Number((currentP - minLocalP).toFixed(1));
+
+        if (reboundRise >= 1.2 && currentP > prev1) {
+          return {
+            status: 'rebound_danger',
+            label: '底打ち反転急上昇',
+            badgeClass: 'bg-purple-500/20 text-purple-300 border border-purple-500/50 shadow-glow-rebound',
+            advice: '【反転警戒】気圧が底打ちし急上昇へ転じました。副交感から交感神経への急反動（反跳）により血管収縮頭痛が好発します。'
+          };
+        } else if (reboundRise >= 0.7 && currentP > prev1) {
+          return {
+            status: 'warning',
+            label: '上昇反転注意',
+            badgeClass: 'bg-amber-500/20 text-amber-300 border border-amber-500/40',
+            advice: '気圧が上昇へ切り替わり始めています。首や肩の緊張をほぐし急な負荷を避けてください。'
+          };
+        } else if (prev6 - currentP >= 4.5) {
+          return {
+            status: 'drop_danger',
+            label: '低下警戒中',
+            badgeClass: 'bg-rose-500/20 text-rose-400 border border-rose-500/50 shadow-glow-drop',
+            advice: '底打ち前の低下段階です。無理をせず安静を心がけてください。'
+          };
+        }
+        return {
+          status: 'safe',
+          label: '安定推移',
+          badgeClass: 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30',
+          advice: '気圧の急激な反転や急低下は見られません。自律神経は比較的穏やかな状態です。'
+        };
+      }
+
+      // 2. 標準急低下ルール (standard)
+      if (rule === 'standard') {
+        const drop = Number((prev6 - currentP).toFixed(1));
+        if (drop >= 6.0) {
+          return {
+            status: 'drop_danger',
+            label: '急低下・超警戒',
+            badgeClass: 'bg-rose-500/20 text-rose-400 border border-rose-500/50 shadow-glow-drop',
+            advice: '【急低下警戒】6時間で6hPa以上の急降下。内耳の気圧センサーが過剰興奮しやすい危険水域です。'
+          };
+        } else if (drop >= 3.5) {
+          return {
+            status: 'warning',
+            label: '低下注意',
+            badgeClass: 'bg-amber-500/20 text-amber-300 border border-amber-500/40',
+            advice: '気圧が低下傾向です。水分補給と早めの休息を意識してください。'
+          };
+        }
+        return {
+          status: 'safe',
+          label: '安定',
+          badgeClass: 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30',
+          advice: '目立った気圧変動はなく安定しています。'
+        };
+      }
+
+      // 3. 高感度・片頭痛 (sensitive)
+      if (rule === 'sensitive') {
+        const drop = Number((prev3 - currentP).toFixed(1));
+        if (drop >= 3.0) {
+          return {
+            status: 'drop_danger',
+            label: '早期低下警戒',
+            badgeClass: 'bg-rose-500/20 text-rose-400 border border-rose-500/50 shadow-glow-drop',
+            advice: '短時間での低下初動を検知。片頭痛の予兆がある場合は早めの予防的対処をおすすめします。'
+          };
+        } else if (drop >= 1.8) {
+          return {
+            status: 'warning',
+            label: '低下予兆',
+            badgeClass: 'bg-amber-500/20 text-amber-300 border border-amber-500/40',
+            advice: '気圧が下がり始めています。無理なスケジュールを避けましょう。'
+          };
+        }
+        return {
+          status: 'safe',
+          label: '安定',
+          badgeClass: 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30',
+          advice: '気圧は安定しています。'
+        };
+      }
+
+      // 4. 前線急変・乱高下 (turbulent)
+      if (rule === 'turbulent') {
+        const diff1h = Math.abs(currentP - prev1);
+        if (diff1h >= 1.5) {
+          return {
+            status: 'drop_danger',
+            label: '前線急変・乱高下',
+            badgeClass: 'bg-sky-500/25 text-sky-300 border border-sky-400/50 shadow-glow-cyan',
+            advice: '寒冷前線や雷雲等による1時間単位の急変を検知。自律神経への急激な負荷に警戒してください。'
+          };
+        } else if (diff1h >= 0.8) {
+          return {
+            status: 'warning',
+            label: '小刻み変動',
+            badgeClass: 'bg-amber-500/20 text-amber-300 border border-amber-500/40',
+            advice: '気圧の細かな揺らぎが生じています。'
+          };
+        }
+        return {
+          status: 'safe',
+          label: '安定',
+          badgeClass: 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30',
+          advice: '気圧の乱高下はありません。'
+        };
+      }
+
+      return { status: 'safe', label: '安定', badgeClass: 'bg-emerald-500/20 text-emerald-300', advice: '通常推移です。' };
+    }
+
+    /**
+     * 次の警戒ピーク（危険時間帯）を自動検出し、ショートカットボタンに反映
+     */
+    function scanNextHazard() {
+      state.nextHazardIndex = null;
+      const label = document.getElementById('nextHazardLabel');
+      const btn = document.getElementById('btnJumpNextHazard');
+
+      for (let i = state.nowIndex; i < state.timelineData.length; i++) {
+        const risk = computeMedicalRisk(state.timelineData, i, state.activeRule);
+        if (risk.status === 'rebound_danger' || risk.status === 'drop_danger') {
+          state.nextHazardIndex = i;
+          const targetD = state.timelineData[i].dateObj;
+          const month = targetD.getMonth() + 1;
+          const date = targetD.getDate();
+          const hour = String(targetD.getHours()).padStart(2, '0');
+          const isRebound = (risk.status === 'rebound_danger');
+
+          label.textContent = `⚡警戒: ${month}/${date} ${hour}:00 (${isRebound ? '反転急上昇' : '急低下'})`;
+          btn.className = isRebound
+            ? 'flex-1 flex items-center justify-center gap-1 px-2.5 py-1.5 rounded-2xl bg-purple-950/60 border border-purple-400 text-purple-200 text-[11px] font-extrabold truncate active:scale-95 transition shadow-glow-rebound'
+            : 'flex-1 flex items-center justify-center gap-1 px-2.5 py-1.5 rounded-2xl bg-rose-950/60 border border-rose-400 text-rose-200 text-[11px] font-extrabold truncate active:scale-95 transition shadow-glow-drop';
+          return;
+        }
+      }
+
+      label.textContent = '今後72h 危険ピークなし';
+      btn.className = 'flex-1 flex items-center justify-center gap-1 px-2.5 py-1.5 rounded-2xl bg-emerald-950/30 border border-emerald-500/30 text-emerald-300 text-[11px] font-extrabold truncate opacity-80';
+    }
+
+    /**
+     * 気象データの取得（Open-Meteo API または 高精度フォールバック）
+     */
+    async function loadWeatherData(pref) {
+      showToast(`${pref.name}のデータを取得中...`, '🔄');
+
+      const url = `https://api.open-meteo.com/v1/forecast?latitude=${pref.lat}&longitude=${pref.lon}&hourly=pressure_msl,temperature_2m,weather_code&timezone=Asia%2FTokyo&past_days=2&forecast_days=3`;
+
+      try {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP Error: ${res.status}`);
+        const json = await res.json();
+        if (!json.hourly || !json.hourly.time || json.hourly.time.length === 0) {
+          throw new Error('不完全なデータ');
+        }
+        parseApiData(json.hourly);
+        showToast(`${pref.name}のデータを更新完了`, '✅');
+      } catch (err) {
+        console.warn('API接続不可、高精度モックデータを適用します:', err);
+        generateRealisticMockData();
+        showToast('オフラインモードで生成表示中', '⚡');
+      }
+    }
+
+    /**
+     * APIレスポンスのパース処理
+     */
+    function parseApiData(hourly) {
+      const times = hourly.time;
+      const pressures = hourly.pressure_msl;
+      const temps = hourly.temperature_2m;
+      const codes = hourly.weather_code;
+
+      const now = new Date();
+      let closestIdx = 48;
+      let minDiff = Infinity;
+
+      const parsed = [];
+      for (let i = 0; i < times.length; i++) {
+        const d = new Date(times[i]);
+        const diff = Math.abs(d.getTime() - now.getTime());
+        if (diff < minDiff) {
+          minDiff = diff;
+          closestIdx = i;
+        }
+
+        parsed.push({
+          timeStr: times[i],
+          dateObj: d,
+          pressure: Number((pressures[i] || 1013.2).toFixed(1)),
+          temperature: Math.round(temps[i] || 20),
+          weatherCode: codes[i] !== undefined ? codes[i] : 1
+        });
+      }
+
+      state.timelineData = parsed;
+      state.nowIndex = closestIdx;
+      state.focusedIndex = closestIdx;
+
+      calculateDynamicYScale();
+      scanNextHazard();
+      renderAllComponents();
+      setTimeout(() => snapToSlot(state.nowIndex, false), 80);
+    }
+
+    /**
+     * オフライン用：底打ち反転上昇＆急低下を含むリアリティのある120h波形
+     */
+    function generateRealisticMockData() {
+      const parsed = [];
+      const now = new Date();
+      const startTime = new Date(now.getTime() - 48 * 3600 * 1000);
+      startTime.setMinutes(0, 0, 0);
+
+      for (let i = 0; i < 120; i++) {
+        const d = new Date(startTime.getTime() + i * 3600 * 1000);
+        const relH = i - 48; // 現在からの相対時間
+
+        // 過去から現在にかけて低下し、+6h〜+12hで急激な底打ち反転上昇を見せるリアルな低気圧通過シナリオ
+        let pBase = 1014.0;
+        if (relH >= -24 && relH <= 6) {
+          pBase -= (relH + 24) * 0.45; // じわじわ低下
+        } else if (relH > 6 && relH <= 12) {
+          pBase = 1000.5 + (relH - 6) * 1.6; // ★底打ちからの急反転上昇！
+        } else if (relH > 12) {
+          pBase = 1010.1 + Math.sin(relH / 6) * 2;
+        }
+
+        const p = Number((pBase + Math.sin(i * 0.35) * 0.8).toFixed(1));
+        const t = Math.round(19 + Math.sin((i - 8) / 24 * Math.PI * 2) * 5);
+        const wCode = p < 1004 ? 61 : (p < 1010 ? 3 : 1);
+
+        parsed.push({
+          timeStr: d.toISOString(),
+          dateObj: d,
+          pressure: p,
+          temperature: t,
+          weatherCode: wCode
+        });
+      }
+
+      state.timelineData = parsed;
+      state.nowIndex = 48;
+      state.focusedIndex = 48;
+
+      calculateDynamicYScale();
+      scanNextHazard();
+      renderAllComponents();
+      setTimeout(() => snapToSlot(state.nowIndex, false), 80);
+    }
+
+    /**
+     * ダイナミックスケールの算出
+     * 変化がハッキリわかるよう、上下マージンをわずか ±1.5hPa に設定
+     */
+    function calculateDynamicYScale() {
+      if (state.timelineData.length === 0) return;
+      const pList = state.timelineData.map(d => d.pressure);
+      const rawMin = Math.min(...pList);
+      const rawMax = Math.max(...pList);
+
+      const diff = rawMax - rawMin;
+      const pad = diff < 6 ? 2.0 : 1.5;
+
+      state.yScaleMin = Math.floor(rawMin - pad);
+      state.yScaleMax = Math.ceil(rawMax + pad);
+      if (state.yScaleMax - state.yScaleMin < 6) {
+        state.yScaleMax = state.yScaleMin + 6;
+      }
+
+      updateFixedYAxisColumn();
+    }
+
+    /**
+     * 左側固定Y軸カラムの目盛り（hPa）を描画
+     */
+    function updateFixedYAxisColumn() {
+      const col = document.getElementById('fixedYAxisCol');
+      col.innerHTML = '';
+
+      const min = state.yScaleMin;
+      const max = state.yScaleMax;
+      const step = Math.max(1, Math.round((max - min) / 4));
+
+      for (let p = max; p >= min; p -= step) {
+        const item = document.createElement('div');
+        item.className = 'flex items-center justify-end';
+        item.innerHTML = `<span class="text-[9px] font-bold text-slate-300 font-mono">${p}</span>`;
+        col.appendChild(item);
+      }
+    }
+
+    /**
+     * 画面中央レティクル（基準点）に合致した時間データのダッシュボード反映
+     */
+    function updateReticleDashboard(idx) {
+      if (!state.timelineData[idx]) return;
+      const item = state.timelineData[idx];
+
+      // 1. 日時表示
+      const d = item.dateObj;
+      const dayNames = ['日', '月', '火', '水', '木', '金', '土'];
+      const month = d.getMonth() + 1;
+      const date = d.getDate();
+      const day = dayNames[d.getDay()];
+      const hour = String(d.getHours()).padStart(2, '0');
+
+      document.getElementById('reticleTargetTime').textContent = `${month}月${date}日(${day}) ${hour}:00`;
+      
+      // NOWバッジ
+      const nowBadge = document.getElementById('reticleIsNowBadge');
+      if (idx === state.nowIndex) {
+        nowBadge.classList.remove('hidden');
+      } else {
+        nowBadge.classList.add('hidden');
+      }
+
+      // 2. 気圧 & 前3時間変動
+      document.getElementById('reticlePressure').textContent = item.pressure.toFixed(1);
+
+      const prev3Idx = Math.max(0, idx - 3);
+      const prev3P = state.timelineData[prev3Idx].pressure;
+      const diff3h = Number((item.pressure - prev3P).toFixed(1));
+      const trendEl = document.getElementById('reticlePressureTrend');
+
+      if (diff3h > 0) {
+        trendEl.textContent = `+${diff3h} hPa (▲上昇中)`;
+        trendEl.className = 'font-mono text-purple-400 font-bold text-[11px]';
+      } else if (diff3h < 0) {
+        trendEl.textContent = `${diff3h} hPa (▼低下中)`;
+        trendEl.className = 'font-mono text-rose-400 font-bold text-[11px]';
+      } else {
+        trendEl.textContent = `±0.0 hPa (安定)`;
+        trendEl.className = 'font-mono text-slate-300 font-semibold text-[11px]';
+      }
+
+      // 3. 気温 & 天気
+      document.getElementById('reticleTemp').textContent = item.temperature;
+      const wInfo = getWeatherInfo(item.weatherCode);
+      document.getElementById('reticleWeatherIcon').textContent = wInfo.icon;
+      document.getElementById('reticleWeatherText').textContent = wInfo.text;
+
+      // 4. 医学リスク判定
+      const risk = computeMedicalRisk(state.timelineData, idx, state.activeRule);
+      const badge = document.getElementById('reticleRiskBadge');
+      const label = document.getElementById('reticleRiskLabel');
+      const advice = document.getElementById('reticleRiskAdvice');
+      const adviceIcon = document.getElementById('reticleAdviceIcon');
+      const glow = document.getElementById('cardGlowBackdrop');
+
+      badge.className = `flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold transition-all ${risk.badgeClass}`;
+      label.textContent = risk.label;
+      advice.textContent = risk.advice;
+
+      if (risk.status === 'rebound_danger') {
+        glow.className = 'absolute -right-10 -top-10 w-48 h-48 rounded-full bg-purple-500/35 blur-3xl pointer-events-none transition-all duration-500';
+        adviceIcon.textContent = '⚡';
+      } else if (risk.status === 'drop_danger') {
+        glow.className = 'absolute -right-10 -top-10 w-48 h-48 rounded-full bg-rose-500/35 blur-3xl pointer-events-none transition-all duration-500';
+        adviceIcon.textContent = '🚨';
+      } else if (risk.status === 'warning') {
+        glow.className = 'absolute -right-10 -top-10 w-44 h-44 rounded-full bg-amber-500/25 blur-3xl pointer-events-none transition-all duration-500';
+        adviceIcon.textContent = '⚠️';
+      } else {
+        glow.className = 'absolute -right-10 -top-10 w-44 h-44 rounded-full bg-sky-500/20 blur-3xl pointer-events-none transition-all duration-500';
+        adviceIcon.textContent = '💡';
+      }
+    }
+
+    /**
+     * タイムラインDOM要素（日付ピル、3時間おき天気・時刻）の描画
+     */
+    function renderTimelineTracks() {
+      const scroller = document.getElementById('timelineScroller');
+      const track = document.getElementById('timelineTrack');
+      const dateLayer = document.getElementById('layerDatePills');
+      const weatherLayer = document.getElementById('layerWeatherRow');
+      const timeLayer = document.getElementById('layerTimeRow');
+
+      // コンテナ幅の50%を左右パディングにして、最初と最後のスロットも中央レティクルに合わせられるようにする
+      const visibleWidth = scroller.clientWidth || 300;
+      state.sidePadding = Math.floor(visibleWidth / 2);
+
+      const totalTrackWidth = (state.timelineData.length * state.slotWidth) + (state.sidePadding * 2);
+      track.style.width = `${totalTrackWidth}px`;
+
+      dateLayer.innerHTML = '';
+      weatherLayer.innerHTML = '';
+      timeLayer.innerHTML = '';
+
+      let lastDateKey = '';
+      const dayNames = ['日', '月', '火', '水', '木', '金', '土'];
+
+      state.timelineData.forEach((item, i) => {
+        const leftX = state.sidePadding + (i * state.slotWidth);
+        const d = item.dateObj;
+        const dateKey = `${d.getMonth() + 1}/${d.getDate()}`;
+        const hours = d.getHours();
+
+        // 1. 日付ピル（日付の変わり目）
+        if (dateKey !== lastDateKey) {
+          lastDateKey = dateKey;
+          const pill = document.createElement('div');
+          pill.className = 'absolute top-0.5 px-2 py-0.5 rounded-full bg-white/10 text-white font-bold text-[8px] border border-white/10 flex items-center gap-1 z-10';
+          pill.style.left = `${leftX + 2}px`;
+          pill.textContent = `${dateKey} (${dayNames[d.getDay()]})`;
+          dateLayer.appendChild(pill);
+        }
+
+        // 2. 3時間おき（0, 3, 6, 9, 12, 15, 18, 21時）の天気・気温表示
+        if (hours % 3 === 0) {
+          const wMeta = getWeatherInfo(item.weatherCode);
+          const wCell = document.createElement('div');
+          wCell.className = 'absolute top-0 bottom-0 flex flex-col items-center justify-center text-center';
+          wCell.style.left = `${leftX - (state.slotWidth * 1.5)}px`;
+          wCell.style.width = `${state.slotWidth * 3}px`;
+          wCell.innerHTML = `
+            <span class="text-xs select-none leading-none">${wMeta.icon}</span>
+            <span class="text-[9px] font-bold text-slate-300 font-mono mt-0.5">${item.temperature}°</span>
+          `;
+          weatherLayer.appendChild(wCell);
+
+          // 3. 3時間おきの時刻ラベル
+          const isMajor = (hours === 0 || hours === 12);
+          const tCell = document.createElement('div');
+          tCell.className = 'absolute top-0 bottom-0 flex flex-col items-center justify-center text-center border-l border-white/5';
+          tCell.style.left = `${leftX}px`;
+          tCell.style.width = `${state.slotWidth * 3}px`;
+          tCell.innerHTML = `
+            <span class="text-[9px] ${isMajor ? 'font-extrabold text-sky-300' : 'text-slate-400 font-medium'} font-mono">${hours}:00</span>
+          `;
+          timeLayer.appendChild(tCell);
+        }
+      });
+    }
+
+    /**
+     * Canvas上に起伏が際立つベジェ気圧波形＆体調スタンプを描画
+     */
+    function renderPressureCanvas() {
+      const canvas = document.getElementById('canvasPressureWave');
+      const track = document.getElementById('timelineTrack');
+      if (!canvas || state.timelineData.length === 0) return;
+
+      const totalWidth = track.clientWidth || ((state.timelineData.length * state.slotWidth) + (state.sidePadding * 2));
+      const height = canvas.parentElement.clientHeight || 140;
+
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = totalWidth * dpr;
+      canvas.height = height * dpr;
+      canvas.style.width = `${totalWidth}px`;
+      canvas.style.height = `${height}px`;
+
+      const ctx = canvas.getContext('2d');
+      ctx.scale(dpr, dpr);
+      ctx.clearRect(0, 0, totalWidth, height);
+
+      const minP = state.yScaleMin;
+      const maxP = state.yScaleMax;
+
+      const getX = (i) => state.sidePadding + (i * state.slotWidth) + (state.slotWidth / 2);
+      const getY = (p) => {
+        const ratio = (p - minP) / (maxP - minP);
+        const pad = 14;
+        return height - pad - ratio * (height - pad * 2);
+      };
+
+      // 1. 水平ガイドライン
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 4]);
+
+      const step = Math.max(1, Math.round((maxP - minP) / 4));
+      for (let p = maxP; p >= minP; p -= step) {
+        const y = getY(p);
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(totalWidth, y);
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+
+      // 2. 警戒背景帯（反転上昇＝パープル、急低下＝レッド）
+      state.timelineData.forEach((item, i) => {
+        const risk = computeMedicalRisk(state.timelineData, i, state.activeRule);
+        const cellX = state.sidePadding + (i * state.slotWidth);
+
+        if (risk.status === 'rebound_danger') {
+          const grad = ctx.createLinearGradient(0, 0, 0, height);
+          grad.addColorStop(0, 'rgba(168, 85, 247, 0.32)');
+          grad.addColorStop(1, 'rgba(168, 85, 247, 0.02)');
+          ctx.fillStyle = grad;
+          ctx.fillRect(cellX, 0, state.slotWidth, height);
+
+          ctx.fillStyle = 'rgba(168, 85, 247, 0.7)';
+          ctx.fillRect(cellX, 0, state.slotWidth, 2);
+        } else if (risk.status === 'drop_danger') {
+          const grad = ctx.createLinearGradient(0, 0, 0, height);
+          grad.addColorStop(0, 'rgba(244, 63, 94, 0.28)');
+          grad.addColorStop(1, 'rgba(244, 63, 94, 0.02)');
+          ctx.fillStyle = grad;
+          ctx.fillRect(cellX, 0, state.slotWidth, height);
+
+          ctx.fillStyle = 'rgba(244, 63, 94, 0.7)';
+          ctx.fillRect(cellX, 0, state.slotWidth, 2);
+        }
+      });
+
+      // 3. 気圧波形の下部グラデーション塗りつぶし
+      ctx.beginPath();
+      ctx.moveTo(getX(0), height);
+      ctx.lineTo(getX(0), getY(state.timelineData[0].pressure));
+
+      for (let i = 0; i < state.timelineData.length - 1; i++) {
+        const x0 = getX(i);
+        const y0 = getY(state.timelineData[i].pressure);
+        const x1 = getX(i + 1);
+        const y1 = getY(state.timelineData[i + 1].pressure);
+        const mx = (x0 + x1) / 2;
+        ctx.bezierCurveTo(mx, y0, mx, y1, x1, y1);
+      }
+      ctx.lineTo(getX(state.timelineData.length - 1), height);
+      ctx.closePath();
+
+      const fillGrad = ctx.createLinearGradient(0, 0, 0, height);
+      fillGrad.addColorStop(0, 'rgba(56, 189, 248, 0.35)');
+      fillGrad.addColorStop(0.8, 'rgba(56, 189, 248, 0.03)');
+      fillGrad.addColorStop(1, 'rgba(56, 189, 248, 0)');
+      ctx.fillStyle = fillGrad;
+      ctx.fill();
+
+      // 4. メイン気圧ベジェ曲線ストローク
+      ctx.beginPath();
+      ctx.moveTo(getX(0), getY(state.timelineData[0].pressure));
+
+      for (let i = 0; i < state.timelineData.length - 1; i++) {
+        const x0 = getX(i);
+        const y0 = getY(state.timelineData[i].pressure);
+        const x1 = getX(i + 1);
+        const y1 = getY(state.timelineData[i + 1].pressure);
+        const mx = (x0 + x1) / 2;
+        ctx.bezierCurveTo(mx, y0, mx, y1, x1, y1);
+      }
+
+      ctx.lineWidth = 2.4;
+      ctx.strokeStyle = '#38bdf8';
+      ctx.shadowColor = 'rgba(56, 189, 248, 0.5)';
+      ctx.shadowBlur = 5;
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+
+      // 5. データ点 ＆ 【改善項目】体調スタンプアイコン描画
+      state.timelineData.forEach((item, i) => {
+        const x = getX(i);
+        const y = getY(item.pressure);
+        const risk = computeMedicalRisk(state.timelineData, i, state.activeRule);
+
+        // スタンプ描画
+        const stampType = state.stamps[item.timeStr];
+        if (stampType) {
+          ctx.font = '14px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'bottom';
+          let icon = '⚡';
+          if (stampType === 'meds') icon = '💊';
+          if (stampType === 'fine') icon = '🌿';
+          ctx.fillText(icon, x, y - 6);
+        }
+
+        // ポイント描画
+        ctx.beginPath();
+        if (risk.status === 'rebound_danger') {
+          ctx.arc(x, y, 4, 0, Math.PI * 2);
+          ctx.fillStyle = '#a855f7';
+          ctx.fill();
+          ctx.lineWidth = 1.5;
+          ctx.strokeStyle = '#ffffff';
+          ctx.stroke();
+        } else if (risk.status === 'drop_danger') {
+          ctx.arc(x, y, 4, 0, Math.PI * 2);
+          ctx.fillStyle = '#f43f5e';
+          ctx.fill();
+          ctx.lineWidth = 1.5;
+          ctx.strokeStyle = '#ffffff';
+          ctx.stroke();
+        } else if (i === state.nowIndex) {
+          ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+          ctx.fillStyle = '#38bdf8';
+          ctx.fill();
+          ctx.lineWidth = 1.5;
+          ctx.strokeStyle = '#ffffff';
+          ctx.stroke();
+        } else if (i % 3 === 0) {
+          ctx.arc(x, y, 1.8, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+          ctx.fill();
+        }
+      });
+    }
+
+    /**
+     * スクロール監視：中央レティクル（基準点）が指しているスロットを特定
+     */
+    function onTimelineScroll() {
+      const scroller = document.getElementById('timelineScroller');
+      const currentScroll = scroller.scrollLeft;
+
+      const idx = Math.round(currentScroll / state.slotWidth);
+      const clampedIdx = Math.max(0, Math.min(state.timelineData.length - 1, idx));
+
+      if (clampedIdx !== state.focusedIndex) {
+        state.focusedIndex = clampedIdx;
+        updateReticleDashboard(clampedIdx);
+      }
+    }
+
+    /**
+     * 指定スロットを画面中央レティクルにピタッと合わせる
+     */
+    function snapToSlot(idx, smooth = true) {
+      const scroller = document.getElementById('timelineScroller');
+      const targetScroll = idx * state.slotWidth;
+
+      scroller.scrollTo({
+        left: targetScroll,
+        behavior: smooth ? 'smooth' : 'auto'
+      });
+      state.focusedIndex = idx;
+      updateReticleDashboard(idx);
+    }
+
+    /**
+     * ポインター（マウス・指）によるドラッグスクロールの確実な動作設定
+     */
+    function setupDragToScroll() {
+      const scroller = document.getElementById('timelineScroller');
+      let isDown = false;
+      let startX = 0;
+      let scrollLeft = 0;
+
+      scroller.addEventListener('pointerdown', (e) => {
+        isDown = true;
+        startX = e.pageX - scroller.offsetLeft;
+        scrollLeft = scroller.scrollLeft;
+        scroller.setPointerCapture(e.pointerId);
+      });
+
+      scroller.addEventListener('pointermove', (e) => {
+        if (!isDown) return;
+        e.preventDefault();
+        const x = e.pageX - scroller.offsetLeft;
+        const walk = (x - startX) * 1.4; // スクロール感度
+        scroller.scrollLeft = scrollLeft - walk;
+      });
+
+      const endDrag = (e) => {
+        if (!isDown) return;
+        isDown = false;
+        try { scroller.releasePointerCapture(e.pointerId); } catch(err){}
+      };
+
+      scroller.addEventListener('pointerup', endDrag);
+      scroller.addEventListener('pointercancel', endDrag);
+      scroller.addEventListener('pointerleave', endDrag);
+    }
+
+    /**
+     * 体調スタンプを基準点の時間に記録
+     */
+    function recordStampAtCurrentFocus(type) {
+      if (!state.timelineData[state.focusedIndex]) return;
+      const targetTimeStr = state.timelineData[state.focusedIndex].timeStr;
+
+      if (state.stamps[targetTimeStr] === type) {
+        delete state.stamps[targetTimeStr];
+        showToast('スタンプを取り消しました', '↩️');
+      } else {
+        state.stamps[targetTimeStr] = type;
+        const typeLabels = { headache: '頭痛 ⚡', meds: '服薬 💊', fine: '快調 🌿' };
+        showToast(`${typeLabels[type]} を記録しました`, '📝');
+      }
+
+      try {
+        localStorage.setItem('aeropulse_stamps', JSON.stringify(state.stamps));
+      } catch(e) {}
+
+      renderPressureCanvas();
+    }
+
+    /**
+     * 今後24時間のサマリー数値を算出
+     */
+    function updateFooterMetrics() {
+      if (state.timelineData.length === 0) return;
+      const next24 = state.timelineData.slice(state.nowIndex, state.nowIndex + 24);
+      if (next24.length === 0) return;
+
+      const minP = Math.min(...next24.map(d => d.pressure));
+      document.getElementById('metricMinP').textContent = `${minP.toFixed(1)} hPa`;
+
+      let maxRise = 0;
+      let maxDrop = 0;
+      for (let i = 0; i < next24.length; i++) {
+        const gIdx = state.nowIndex + i;
+        const cur = state.timelineData[gIdx].pressure;
+        const prev3 = state.timelineData[Math.max(0, gIdx - 3)].pressure;
+        const diff = cur - prev3;
+
+        if (diff > maxRise) maxRise = diff;
+        if (-diff > maxDrop) maxDrop = -diff;
+      }
+
+      document.getElementById('metricMaxRise').textContent = `+${maxRise.toFixed(1)} hPa`;
+      document.getElementById('metricMaxDrop').textContent = `-${maxDrop.toFixed(1)} hPa`;
+    }
+
+    /**
+     * 全コンポーネントの一括再描画
+     */
+    function renderAllComponents() {
+      renderTimelineTracks();
+      renderPressureCanvas();
+      updateReticleDashboard(state.focusedIndex);
+      updateFooterMetrics();
+    }
+
+    /**
+     * イベントハンドラー登録
+     */
+    function setupAppInteractions() {
+      const scroller = document.getElementById('timelineScroller');
+
+      // 1. スクロール監視 & ドラッグ初期化
+      scroller.addEventListener('scroll', onTimelineScroll, { passive: true });
+      setupDragToScroll();
+
+      // 2. ナビゲーションボタン（今に戻る / ◀ 6h / 6h ▶）
+      document.getElementById('btnSnapToNow').addEventListener('click', () => {
+        snapToSlot(state.nowIndex, true);
+        showToast('現在時刻に照準を合わせました', '⏱️');
+      });
+
+      document.getElementById('btnStepPrev').addEventListener('click', () => {
+        const nextIdx = Math.max(0, state.focusedIndex - 6);
+        snapToSlot(nextIdx, true);
+      });
+
+      document.getElementById('btnStepNext').addEventListener('click', () => {
+        const nextIdx = Math.min(state.timelineData.length - 1, state.focusedIndex + 6);
+        snapToSlot(nextIdx, true);
+      });
+
+      // 3. 次の警戒ピークへ直行ジャンプ
+      document.getElementById('btnJumpNextHazard').addEventListener('click', () => {
+        if (state.nextHazardIndex !== null) {
+          snapToSlot(state.nextHazardIndex, true);
+          showToast('次の警戒時刻に照準を合わせました', '🎯');
+        } else {
+          showToast('直近に警戒ピークはありません', '🌿');
+        }
+      });
+
+      // 4. 体調スタンプボタン
+      document.getElementById('btnStampHeadache').addEventListener('click', () => recordStampAtCurrentFocus('headache'));
+      document.getElementById('btnStampMeds').addEventListener('click', () => recordStampAtCurrentFocus('meds'));
+      document.getElementById('btnStampFine').addEventListener('click', () => recordStampAtCurrentFocus('fine'));
+
+      // 5. 設定ボトムシートの開閉
+      const sheet = document.getElementById('settingsSheet');
+      const backdrop = document.getElementById('settingsBackdrop');
+
+      const openSheet = () => {
+        backdrop.classList.remove('opacity-0', 'pointer-events-none');
+        backdrop.classList.add('opacity-100');
+        sheet.classList.remove('translate-y-full');
+      };
+
+      const closeSheet = () => {
+        backdrop.classList.remove('opacity-100');
+        backdrop.classList.add('opacity-0', 'pointer-events-none');
+        sheet.classList.add('translate-y-full');
+      };
+
+      document.getElementById('btnOpenSettings').addEventListener('click', openSheet);
+      document.getElementById('btnHeaderLocation').addEventListener('click', openSheet);
+      document.getElementById('btnCloseSettings').addEventListener('click', closeSheet);
+      document.getElementById('btnSaveAndCloseSettings').addEventListener('click', closeSheet);
+      backdrop.addEventListener('click', closeSheet);
+
+      // 6. 都道府県セレクトボックスの構築
+      const prefSelect = document.getElementById('prefSelectDropdown');
+      PREFECTURES_DATA.forEach(p => {
+        const opt = document.createElement('option');
+        opt.value = p.id;
+        opt.textContent = p.name;
+        opt.className = 'bg-slate-900 text-white';
+        prefSelect.appendChild(opt);
+      });
+
+      prefSelect.addEventListener('change', (e) => {
+        const target = PREFECTURES_DATA.find(p => p.id === e.target.value);
+        if (target) {
+          state.selectedPref = target;
+          document.getElementById('headerPrefName').textContent = target.name;
+          loadWeatherData(target);
+        }
+      });
+
+      // 7. アラート検知プロファイル（医学基準）の選択
+      const ruleCards = document.querySelectorAll('#alertProfileList .rule-card');
+      ruleCards.forEach(card => {
+        card.addEventListener('click', () => {
+          ruleCards.forEach(c => {
+            c.classList.remove('active', 'bg-purple-950/40', 'border-purple-500/60', 'shadow-glow-rebound', 'bg-sky-950/40', 'border-sky-500/60', 'shadow-glow-cyan', 'text-white');
+            c.classList.add('border-white/10', 'bg-white/5', 'text-slate-300');
+          });
+
+          card.classList.add('active', 'bg-purple-950/40', 'border-purple-500/60', 'shadow-glow-rebound', 'text-white');
+          card.classList.remove('border-white/10', 'bg-white/5', 'text-slate-300');
+
+          state.activeRule = card.getAttribute('data-rule');
+          scanNextHazard();
+          renderAllComponents();
+
+          const ruleNameMap = {
+            rebound: '底打ち反転・急上昇警戒',
+            standard: '標準急低下警戒',
+            sensitive: '早期片頭痛警戒',
+            turbulent: '前線急変・乱高下'
+          };
+          showToast(`「${ruleNameMap[state.activeRule]}」を適用`, '🩺');
+        });
+      });
+
+      // 8. スタンプ初期化
+      document.getElementById('btnClearStamps').addEventListener('click', () => {
+        state.stamps = {};
+        try { localStorage.removeItem('aeropulse_stamps'); } catch(e){}
+        renderPressureCanvas();
+        showToast('スタンプログを初期化しました', '🗑️');
+      });
+
+      // 9. 画面リサイズ時の自動調整
+      window.addEventListener('resize', () => {
+        renderAllComponents();
+        snapToSlot(state.focusedIndex, false);
+      });
+    }
+
+    /**
+     * トースト通知の表示
+     */
+    function showToast(msg, icon = '✨') {
+      const toast = document.getElementById('toastNotification');
+      document.getElementById('toastMessage').textContent = msg;
+      document.getElementById('toastIcon').textContent = icon;
+      toast.classList.remove('opacity-0');
+      toast.classList.add('opacity-100');
+
+      clearTimeout(window._toastTimer);
+      window._toastTimer = setTimeout(() => {
+        toast.classList.remove('opacity-100');
+        toast.classList.add('opacity-0');
+      }, 2200);
+    }
+
+    // アプリケーション起動
+    window.addEventListener('DOMContentLoaded', () => {
+      setupAppInteractions();
+      loadWeatherData(state.selectedPref);
+    });
+  </script>
+  <script>
+  if ('serviceWorker' in navigator) { navigator.serviceWorker.register('./sw.js'); }
+</script>
+</body>
+</html>
